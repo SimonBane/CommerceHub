@@ -1,0 +1,6 @@
+@CommerceHub.SearchService_HostAddress = http://localhost:0
+
+GET {{CommerceHub.SearchService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

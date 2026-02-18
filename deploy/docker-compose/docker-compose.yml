@@ -1,0 +1,336 @@
+# CommerceHub Docker Compose - Alternative to Aspire AppHost
+# Run from repo root: docker compose -f deploy/docker-compose/docker-compose.yml up -d
+
+services:
+  # --- Infrastructure (matches AppHost) ---
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - commercehub
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+    networks:
+      - commercehub
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      retries: 5
+    networks:
+      - commercehub
+
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      retries: 5
+
+  # --- Observability ---
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.112.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "9464:9464"   # Prometheus metrics
+    depends_on:
+      - postgres
+    networks:
+      - commercehub
+
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+    networks:
+      - commercehub
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_HTTP_PORT: 3000
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../../deploy/observability:/etc/grafana/provisioning/dashboards/json:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - commercehub
+
+  # --- CommerceHub Services ---
+  commercehub-identityservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.IdentityService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__identityDb: "Host=postgres;Port=5432;Database=identitydb;Username=postgres;Password=postgres"
+      JwtConfiguration__SigningKey: "c3wJsEHQQ6lmwvdVe3e5LXbkUC7CYb6U52arbKbEnNc"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-identityservice"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-catalogservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.CatalogService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__catalogDb: "Host=postgres;Port=5432;Database=catalogdb;Username=postgres;Password=postgres"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-catalogservice"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-searchservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.SearchService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__mongoDb: "mongodb://mongodb:27017"
+      ConnectionStrings__MongoDatabaseName: "commercehub_search"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-searchservice"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-basketservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.BasketService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__redis: "redis:6379"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-basketservice"
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-checkoutorchestrator:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.CheckoutOrchestrator/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__checkoutOrchestratorDb: "Host=postgres;Port=5432;Database=checkoutorchestratordb;Username=postgres;Password=postgres"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-checkoutorchestrator"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-orderingservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.OrderingService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__orderingDb: "Host=postgres;Port=5432;Database=orderingdb;Username=postgres;Password=postgres"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-orderingservice"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-inventoryservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.InventoryService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__inventoryDb: "Host=postgres;Port=5432;Database=inventorydb;Username=postgres;Password=postgres"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-inventoryservice"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-paymentservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.PaymentService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__paymentDb: "Host=postgres;Port=5432;Database=paymentdb;Username=postgres;Password=postgres"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-paymentservice"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-notificationservice:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.NotificationService/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__notificationDb: "Host=postgres;Port=5432;Database=notificationdb;Username=postgres;Password=postgres"
+      ConnectionStrings__rabbitMq: "amqp://guest:guest@rabbitmq:5672"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-notificationservice"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - commercehub
+
+  commercehub-backofficeapi:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.BackofficeApi/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__mongoDb: "mongodb://mongodb:27017"
+      ConnectionStrings__MongoDatabaseName: "commercehub_search"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-backofficeapi"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      commercehub-catalogservice:
+        condition: service_started
+      commercehub-orderingservice:
+        condition: service_started
+    networks:
+      - commercehub
+
+  commercehub-gateway:
+    build:
+      context: ../..
+      dockerfile: src/CommerceHub.GatewayApi/Dockerfile
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      Jwt__SigningKey: "c3wJsEHQQ6lmwvdVe3e5LXbkUC7CYb6U52arbKbEnNc"
+      Jwt__Issuer: "CommerceHub.IdentityService"
+      Jwt__Audience: "CommerceHub.Gateway"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "commercehub-gateway"
+    ports:
+      - "5000:8080"
+    depends_on:
+      commercehub-identityservice:
+        condition: service_started
+      commercehub-catalogservice:
+        condition: service_started
+      commercehub-searchservice:
+        condition: service_started
+      commercehub-basketservice:
+        condition: service_started
+      commercehub-checkoutorchestrator:
+        condition: service_started
+      commercehub-notificationservice:
+        condition: service_started
+      commercehub-backofficeapi:
+        condition: service_started
+      commercehub-orderingservice:
+        condition: service_started
+      commercehub-inventoryservice:
+        condition: service_started
+      commercehub-paymentservice:
+        condition: service_started
+    networks:
+      - commercehub
+
+networks:
+  commercehub:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongo_data:
+  prometheus_data:
+  grafana_data:

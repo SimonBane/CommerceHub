@@ -1,0 +1,6 @@
+@CommerceHub.CatalogService_HostAddress = http://localhost:0
+
+GET {{CommerceHub.CatalogService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

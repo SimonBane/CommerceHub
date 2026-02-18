@@ -1,0 +1,35 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.0.0">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <UserSecretsId>044e3aa7-ec8f-4709-94f2-801394c22582</UserSecretsId>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\CommerceHub.CatalogService\CommerceHub.CatalogService.csproj" />
+      <ProjectReference Include="..\CommerceHub.GatewayApi\CommerceHub.GatewayApi.csproj" />
+      <ProjectReference Include="..\CommerceHub.IdentityService\CommerceHub.IdentityService.csproj" />
+      <ProjectReference Include="..\CommerceHub.OrderingService\CommerceHub.OrderingService.csproj" />
+      <ProjectReference Include="..\CommerceHub.SearchService\CommerceHub.SearchService.csproj" />
+      <ProjectReference Include="..\CommerceHub.BasketService\CommerceHub.BasketService.csproj" />
+      <ProjectReference Include="..\CommerceHub.InventoryService\CommerceHub.InventoryService.csproj" />
+      <ProjectReference Include="..\CommerceHub.PaymentService\CommerceHub.PaymentService.csproj" />
+      <ProjectReference Include="..\CommerceHub.CheckoutOrchestrator\CommerceHub.CheckoutOrchestrator.csproj" />
+      <ProjectReference Include="..\CommerceHub.NotificationService\CommerceHub.NotificationService.csproj" />
+      <ProjectReference Include="..\CommerceHub.BackofficeApi\CommerceHub.BackofficeApi.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Aspire.Hosting.AppHost" Version="13.1.1" />
+      <PackageReference Include="Aspire.Hosting.Keycloak" Version="13.1.1-preview.1.26105.8" />
+      <PackageReference Include="Aspire.Hosting.MongoDB" Version="13.1.1" />
+      <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.1.1" />
+      <PackageReference Include="Aspire.Hosting.RabbitMQ" Version="13.1.1" />
+      <PackageReference Include="Aspire.Hosting.Redis" Version="13.1.1" />
+      <PackageReference Include="Aspire.Hosting.Yarp" Version="13.1.1" />
+    </ItemGroup>
+
+</Project>
